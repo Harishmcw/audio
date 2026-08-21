@@ -1,0 +1,74 @@
+name: Build Windows ARM64 Wheels
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/build_wheel_windows_arm64.yml
+  push:
+    branches:
+      - nightly
+      - release/*
+      - test_ci
+    tags:
+        # NOTE: Binary build pipelines should only get triggered on release candidate builds
+        # Release candidate tags look like: v1.11.0-rc1
+        - v[0-9]+.[0-9]+.[0-9]+-rc[0-9]+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  generate-matrix:
+    uses: pytorch/test-infra/.github/workflows/generate_binary_build_matrix.yml@main
+    with:
+      package-type: wheel
+      os: windows-arm64
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      with-cuda: disable
+
+  override-runner:
+    runs-on: ubuntu-latest
+    needs: generate-matrix
+    outputs:
+      matrix: ${{ steps.override.outputs.matrix }}
+    steps:
+      - id: override
+        run: |
+          MATRIX='${{ needs.generate-matrix.outputs.matrix }}'
+          # Replace the restricted preview runner with the public GitHub runner
+          NEW_MATRIX=$(echo "$MATRIX" | sed 's/"validation_runner": "windows-11-arm64-preview"/"validation_runner": "windows-11-arm"/g')
+          # Also replace "windows-arm64-preview" if they use that name
+          NEW_MATRIX=$(echo "$NEW_MATRIX" | sed 's/"validation_runner": "windows-arm64-preview"/"validation_runner": "windows-11-arm"/g')
+          echo "matrix=$NEW_MATRIX" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: override-runner
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - repository: pytorch/audio
+            pre-script: packaging/pre_build_script_arm64.sh
+            smoke-test-script: test/smoke_test/smoke_test_no_ffmpeg.py
+            package-name: torchaudio
+            architecture: "arm64"
+    name: ${{ matrix.repository }}
+    uses: pytorch/test-infra/.github/workflows/build_wheels_windows.yml@main
+    with:
+      repository: ${{ github.repository }}
+      ref: ${{ github.ref }}
+      test-infra-repository: pytorch/test-infra
+      test-infra-ref: main
+      pre-script: ${{ matrix.pre-script }}
+      build-matrix: ${{ needs.override-runner.outputs.matrix }}
+      package-name: ${{ matrix.package-name }}
+      smoke-test-script: ${{ matrix.smoke-test-script }}
+      trigger-event: ${{ github.event_name }}
+      architecture: ${{ matrix.architecture }}
+    secrets:
+      R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
